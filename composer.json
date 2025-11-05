@@ -1,0 +1,11 @@
+{
+    "require": {
+        "mongodb/mongodb": "^2.1"
+    },
+
+    "autoload": {
+        "files": [
+            "includes/helper.php"
+        ]
+    }
+}
