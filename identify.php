@@ -13,7 +13,7 @@ require __DIR__ . '/includes/config.php';
 const FP_VERSION = 'fp-1';
 $HMAC_SECRET = $env['HMAC_SECRET'];
 $MONGO_URL = $env['MONGO_URL'];
-$COLLECTION_NAME = $env['MONGO_COLLECTION'] ?: 'fingerprints';
+$COLLECTION_NAME = $env['MONGO_COLLECTION'] ?: 'consumers';
 $DB_NAME = $env['MONGO_DB'] ?: 'consumer_db';
 
 // CORS
@@ -44,17 +44,17 @@ if (!is_array($data)) {
 
 
 // ---------- NORMALIZE FEATURES ----------
-$norm = [
+$deviceInformation = [
     'version'  => lc($data['version'] ?? FP_VERSION),
     // 'storageQuota' => isset($data['storageQuota']) ? (int)$data['storageQuota'] : null,
     'tz'       => lc($data['tz'] ?? null),
     'lang'     => lc($data['lang'] ?? null),
-    // 'languages'     => json_encode($data['languages'] ?? []),
+    'languages'     => json_encode($data['languages'] ?? []),
     'hwc'      => isset($data['hwc']) ? (int)$data['hwc'] : null,
     'mem'      => isset($data['mem']) ? (int)$data['mem'] : null,
     'touch'    => isset($data['touch']) ? (int)$data['touch'] : null,
     'colorGamut' => lc($data['colorGamut'] ?? null),
-    // 'pixelDepth' => isset($data['pixelDepth']) ? (int)$data['pixelDepth'] : null,
+    'pixelDepth' => isset($data['pixelDepth']) ? (int)$data['pixelDepth'] : null,
     'orientation' => lc($data['orientation'] ?? null),
 
     'vendor' => lc($data['vendor'] ?? null),
@@ -63,7 +63,10 @@ $norm = [
     'localStorage' => isset($data['localStorage']) ? (bool)$data['localStorage'] : null,
     'sessionStorage' => isset($data['sessionStorage']) ? (bool)$data['sessionStorage'] : null,
     'indexedDb' => isset($data['indexedDb']) ? (bool)$data['indexedDb'] : null,
-    // 'plugins' => array_slice(array_map('lc', $data['plugins'] ?? []), 0, 20),
+    // 'plugins' => array_slice(array_map(
+    //     fn($p) => lc($p['name'] ?? null),
+    //     $data['plugins'] ?? []
+    // ), 0, 20),
     // 'mimeTypes' => array_slice(array_map(function ($mt) {
     //     return lc(($mt['type'] ?? '') . '/' . ($mt['suffixes'] ?? ''));
     // }, $data['mimeTypes'] ?? []), 0, 20),
@@ -79,7 +82,7 @@ $norm = [
     'screen' => [
         'w'  => isset($data['screen']['w']) ? (int)$data['screen']['w'] : null,
         'h'  => isset($data['screen']['h']) ? (int)$data['screen']['h'] : null,
-        // 'dpr' => isset($data['screen']['dpr']) ? round((float)$data['screen']['dpr'], 2) : null,
+        'dpr' => isset($data['screen']['dpr']) ? round((float)$data['screen']['dpr'], 2) : null,
         'cd' => isset($data['screen']['cd']) ? (int)$data['screen']['cd'] : null,
     ],
 
@@ -104,23 +107,35 @@ $norm = [
         // 'metrics' => $data['fonts']['metrics'] ?? null,
     ],
 ];
+if (isset($data['prepopData']) && is_array($data['prepopData']) && isset($data['prepopData']['bhm_email']) || isset($data['prepopData']['bhm_phone'])) {
+    // use prepopulated data directly
+    $email = isset($data['prepopData']['bhm_email']) ? $data['prepopData']['bhm_email']  : null;
+    $phone = isset($data['prepopData']['bhm_phone']) ? $data['prepopData']['bhm_phone']  : null;
+    $norm = [
+        'email' => lc($email),
+        'phone' => lc($phone ? normalizeToTenDigits($phone) : null),
+    ];
+} else {
+    $norm = $deviceInformation;
 
-// --- derive ua/os families (coarse) ---
-$ua_lc = $norm['ua'];
-if ($ua_lc) {
-    if (str_contains($ua_lc, 'edg/'))        $norm['ua_family'] = 'edge';
-    elseif (str_contains($ua_lc, 'chrome/')) $norm['ua_family'] = 'chrome';
-    elseif (str_contains($ua_lc, 'safari/') && !str_contains($ua_lc, 'chrome/')) $norm['ua_family'] = 'safari';
-    elseif (str_contains($ua_lc, 'firefox/')) $norm['ua_family'] = 'firefox';
-    else $norm['ua_family'] = 'other';
+    // --- derive ua/os families (coarse) ---
+    $ua_lc = $norm['ua'];
+    if ($ua_lc) {
+        if (str_contains($ua_lc, 'edg/'))        $norm['ua_family'] = 'edge';
+        elseif (str_contains($ua_lc, 'chrome/')) $norm['ua_family'] = 'chrome';
+        elseif (str_contains($ua_lc, 'safari/') && !str_contains($ua_lc, 'chrome/')) $norm['ua_family'] = 'safari';
+        elseif (str_contains($ua_lc, 'firefox/')) $norm['ua_family'] = 'firefox';
+        else $norm['ua_family'] = 'other';
 
-    if (str_contains($ua_lc, 'android'))      $norm['os_family'] = 'android';
-    elseif (str_contains($ua_lc, 'iphone') || str_contains($ua_lc, 'ipad')) $norm['os_family'] = 'ios';
-    elseif (str_contains($ua_lc, 'windows'))  $norm['os_family'] = 'windows';
-    elseif (str_contains($ua_lc, 'mac os x')) $norm['os_family'] = 'macos';
-    elseif (str_contains($ua_lc, 'linux'))    $norm['os_family'] = 'linux';
-    else $norm['os_family'] = 'other';
+        if (str_contains($ua_lc, 'android'))      $norm['os_family'] = 'android';
+        elseif (str_contains($ua_lc, 'iphone') || str_contains($ua_lc, 'ipad')) $norm['os_family'] = 'ios';
+        elseif (str_contains($ua_lc, 'windows'))  $norm['os_family'] = 'windows';
+        elseif (str_contains($ua_lc, 'mac os x')) $norm['os_family'] = 'macos';
+        elseif (str_contains($ua_lc, 'linux'))    $norm['os_family'] = 'linux';
+        else $norm['os_family'] = 'other';
+    }
 }
+
 
 // Clean & canonicalize
 $norm = array_filter_recursive($norm);
@@ -153,16 +168,36 @@ try {
 }
 
 try {
-    $document = [
-        'uuid' => $fingerprint_hash,
-        'fingerprint_data' => $norm,
+
+    $dataToInsert = [
+        '_id' => $fingerprint_hash,
+        "emails" => [],
+        "phones" => [],
+        "pii" => (object)[],
+        "employment" => (object)[],
+        "financial" => (object)[],
+        "other" => (object)[],
+        "profile_source" => [],
+        "fingerprint_latest" => [
+            'fingerprint_data' => $norm,
+            'device_data' => $deviceInformation,
+            'prepop_data' => $data['prepopData'] ?? null,
+            'ip' => $_SERVER['REMOTE_ADDR'] ?? null,
+            'source' => $httpOrigin,
+        ],
+        'created_at' => new MongoDB\BSON\UTCDateTime(),
         'updated_at' => new MongoDB\BSON\UTCDateTime(),
-        'prepop_data' => $data['prepopData'] ?? null,
-        'ip' => $_SERVER['REMOTE_ADDR'] ?? null,
-        'source' => $httpOrigin,
     ];
 
-    $collection->insertOne($document);
+    //find or create fingerprint record
+    $document = $collection->findOneAndUpdate(
+        ['_id' => $fingerprint_hash],
+        [
+            '$setOnInsert' => $dataToInsert,
+        ],
+        ['upsert' => true, 'returnDocument' => MongoDB\Operation\FindOneAndUpdate::RETURN_DOCUMENT_AFTER]
+
+    );
 } catch (Throwable $e) {
     error_log('MongoDB insert failed: ' . $e->getMessage());
 

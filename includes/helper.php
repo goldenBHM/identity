@@ -31,3 +31,16 @@ function generate_uuid_v4(): string
     $hex = bin2hex($data);
     return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split($hex, 4));
 }
+
+function normalizeToTenDigits($input)
+{
+    // Remove anything not 0–9
+    $digits = preg_replace('/\D/', '', $input);
+
+    // If more than 10 digits, take the LAST 10 (most common for phone formatting)
+    if (strlen($digits) > 10) {
+        $digits = substr($digits, -10);
+    }
+
+    return $digits;
+}

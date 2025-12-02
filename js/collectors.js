@@ -140,7 +140,6 @@ export async function getBasicInfo() {
         "architecture",
         "bitness",
         "fullVersionList",
-        
       ]);
     }
   } catch (e) {
@@ -149,12 +148,10 @@ export async function getBasicInfo() {
 
   const { quota } = await navigator.storage.estimate();
 
-
-
   return {
     tz: Intl.DateTimeFormat().resolvedOptions().timeZone || null,
     lang: n.language || (Array.isArray(n.languages) ? n.languages[0] : null),
-    // languages: n.languages || null,
+    languages: n.languages || null,
     vender: n.vendor || null,
     cpuClass: n.cpuClass || null,
     cookieEnabled: n.cookieEnabled || null,

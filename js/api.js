@@ -1,5 +1,5 @@
 export async function sendFingerprint(data) {
-  const res = await fetch("http://localhost:5000/identify", {
+  const res = await fetch("https://identity.brightoffers.io/identify", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
