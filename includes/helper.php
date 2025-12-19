@@ -44,3 +44,21 @@ function normalizeToTenDigits($input)
 
     return $digits;
 }
+
+function validateRequestData(array $requiredFileds, array $requestData)
+{
+    $missing_fields = [];
+
+    foreach ($requiredFileds as $field) {
+        if (!isset($requestData[$field])) {
+            $fieldName = str_replace('_', " ", $field);
+            $missing_fields[$field] = "The $fieldName is required";
+        }
+    }
+
+    if (!empty($missing_fields)) {
+        echo json_encode(['status' => 'error',  "message" => "Missing required fields", "errors" => $missing_fields]);
+        http_response_code(400); // Bad Request
+        exit();
+    }
+}

@@ -107,7 +107,15 @@ $deviceInformation = [
         // 'metrics' => $data['fonts']['metrics'] ?? null,
     ],
 ];
-if (isset($data['prepopData']) && is_array($data['prepopData']) && isset($data['prepopData']['bhm_email']) || isset($data['prepopData']['bhm_phone'])) {
+if (
+    isset($data['prepopData']) &&
+    is_array($data['prepopData']) &&
+    (
+        (isset($data['prepopData']['bhm_email']) && $data['prepopData']['bhm_email'] !== '' && $data['prepopData']['bhm_email'] !== null) ||
+        (isset($data['prepopData']['bhm_phone']) && $data['prepopData']['bhm_phone'] !== '' && $data['prepopData']['bhm_phone'] !== null)
+    )
+) {
+
     // use prepopulated data directly
     $email = isset($data['prepopData']['bhm_email']) ? $data['prepopData']['bhm_email']  : null;
     $phone = isset($data['prepopData']['bhm_phone']) ? $data['prepopData']['bhm_phone']  : null;
