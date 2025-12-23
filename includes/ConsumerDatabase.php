@@ -317,7 +317,7 @@ class ConsumerDatabase
                 $filter,
                 [
                     '$push' => [
-                        'form_specific_data.form_answers' => $formAnswers
+                        'form_specific_data.form_answers' => ['$each' => $formAnswers]
                     ],
                 ],
                 ['multi' => false, 'upsert' => false]
@@ -334,7 +334,7 @@ class ConsumerDatabase
                 'form_specific_data' => [
                     'domain' => $domain,
                     'landing_page' => $landingPage,
-                    'form_answers' => [$formAnswers] // Wrap in array for first submission
+                    'form_answers' => $formAnswers
                 ]
             ];
 
