@@ -152,12 +152,11 @@ $canonical = json_encode($norm, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)
 
 // ---------- FINGERPRINT HASH ----------
 $hash_raw = hash_hmac('sha256', $canonical, $HMAC_SECRET, true);
-$fingerprint_hash = 'v1_' . rtrim(strtr(base64_encode($hash_raw), '+/', '-_'), '=');
+$fingerprint_hash = 'v1_' . substr(rtrim(strtr(base64_encode($hash_raw), '+/', '-_'), '='), 0, 33);
 
 // ---------- OPTIONAL DB MAPPING ----------
 $visitor_id = $fingerprint_hash;
 $confidence = 0.95;
-
 
 try {
     $mongo = new Client($MONGO_URL);
