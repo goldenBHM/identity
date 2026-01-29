@@ -158,6 +158,8 @@ $fingerprint_hash = 'v1_' . substr(rtrim(strtr(base64_encode($hash_raw), '+/', '
 $visitor_id = $fingerprint_hash;
 $confidence = 0.95;
 
+$savedToDb = false;
+
 try {
     $mongo = new Client($MONGO_URL);
     $collection = $mongo->selectDatabase($DB_NAME)->selectCollection($COLLECTION_NAME);
@@ -205,6 +207,10 @@ try {
         ['upsert' => true, 'returnDocument' => MongoDB\Operation\FindOneAndUpdate::RETURN_DOCUMENT_AFTER]
 
     );
+
+    if ($document) {
+        $savedToDb = true;
+    }
 } catch (Throwable $e) {
     error_log('MongoDB insert failed: ' . $e->getMessage());
 
@@ -222,5 +228,6 @@ echo json_encode([
     'visitor_id' => $visitor_id,
     'confidence' => $confidence,
     'version'    => FP_VERSION,
+    'saved_to_db' => $savedToDb,
     // 'used'       => $norm,
 ]);
