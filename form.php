@@ -61,8 +61,9 @@ try {
         case 'Pre Pop':
             $affiliateId = $post['afid'] ?? null;
             $prepopData = $post['prepop_data'] ?? [];
+            $sessionId = $post['session_id'] ?? null;
 
-            $result = $db->createPrepopFormSubmission($consumerId, $affiliateId, $prepopData);
+            $result = $db->createPrepopFormSubmission($consumerId, $affiliateId, $prepopData, $sessionId);
             break;
 
         case 'Lead Form':
