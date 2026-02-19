@@ -64,7 +64,7 @@ class ConsumerDatabase
             // read-then-write race condition when two requests arrive simultaneously.
             $update = [
                 '$setOnInsert' => [
-                    'timestamp' => new MongoDB\BSON\UTCDateTime(),
+                    'timestamp' => $this->nowPst(),
                     'event_specific_data.campaign_key' => $campaignKey,
                     'event_specific_data.ad_unit_id' => $adUnitId,
                     'event_specific_data.publisher_specific_data' => $publisherData,
@@ -190,7 +190,7 @@ class ConsumerDatabase
                 'child_brightoffers_ad_id' => $childBrightOffersAdId,
                 'parent_everflow_transaction_id' => $parentEverflowTid,
                 'child_everflow_transaction_id' => null,
-                'timestamp' => new MongoDB\BSON\UTCDateTime(),
+                'timestamp' => $this->nowPst(),
                 'event_source' => 'BrightOffers',
                 'event_type' => 'brightoffers_visit_survey',
                 'event_specific_data' => [
@@ -283,7 +283,7 @@ class ConsumerDatabase
                     'child_brightoffers_ad_id' => $childBrightOffersAdId,
                     'parent_everflow_transaction_id' => $parentEverflowTid,
                     'child_everflow_transaction_id' => $childEverflowTid,
-                    'timestamp' => new MongoDB\BSON\UTCDateTime(),
+                    'timestamp' => $this->nowPst(),
                     'event_source' => 'Lead Forms',
                     'event_type' => 'lead_form_visit_wall',
                     'event_specific_data' => [
@@ -362,7 +362,7 @@ class ConsumerDatabase
                 $form = [
                     'consumer_id' => $consumerId,
                     'form_type' => 'Lead Form',
-                    'timestamp' => new MongoDB\BSON\UTCDateTime(),
+                    'timestamp' => $this->nowPst(),
                     'form_specific_data' => [
                         'domain' => $domain,
                         'landing_page' => $landingPage,
@@ -397,7 +397,7 @@ class ConsumerDatabase
             $form = [
                 'consumer_id' => $consumerId,
                 'form_type' => 'Pre Pop',
-                'timestamp' => new MongoDB\BSON\UTCDateTime(),
+                'timestamp' => $this->nowPst(),
                 'form_specific_data' => [
                     'publisher_id' => $afid,
                     'pre_pop_data' => $prepopDataInsert
@@ -421,7 +421,7 @@ class ConsumerDatabase
             $form = [
                 'consumer_id' => $consumerId,
                 'form_type' => 'Survey',
-                'timestamp' => new MongoDB\BSON\UTCDateTime(),
+                'timestamp' => $this->nowPst(),
                 'form_specific_data' => [
                     'survey_id' => $surveyId,
                     'survey_answers' => $surveyAnswers
@@ -449,5 +449,15 @@ class ConsumerDatabase
 
 
     // ==================== UTILITY METHODS ====================
+
+    /**
+     * Returns a UTCDateTime representing the current time in PST/PDT (America/Los_Angeles).
+     * Stores the local PST clock time so timestamps read correctly without timezone conversion.
+     */
+    private function nowPst(): MongoDB\BSON\UTCDateTime
+    {
+        $pst = new DateTime('now', new DateTimeZone('America/Los_Angeles'));
+        return new MongoDB\BSON\UTCDateTime((time() + $pst->getOffset()) * 1000);
+    }
 
 }
