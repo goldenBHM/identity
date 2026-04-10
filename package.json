@@ -1,7 +1,7 @@
 {
 
   "scripts": {
-    "build": "rollup -c"
+    "build": "rollup -c && javascript-obfuscator dist/fingerprint.min.js --output dist/fingerprint.min.js"
   },
 
   "devDependencies": {

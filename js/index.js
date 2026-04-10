@@ -27,3 +27,23 @@ export async function identify(data) {
 
   return await sendFingerprint(payload);
 }
+
+export async function info() {
+  const [canvas, audio] = await Promise.all([
+    getCanvasHash(),
+    getAudioFingerprint(),
+  ]);
+
+  const webgl = getWebGLInfo();
+  const fonts = getFontMetrics();
+
+  const payload = {
+    ...(await getBasicInfo()),
+    canvas,
+    audio,
+    webgl,
+    fonts
+  };
+
+  return payload;
+}
