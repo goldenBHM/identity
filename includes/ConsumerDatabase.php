@@ -23,9 +23,9 @@ class ConsumerDatabase
                 ]
             );
 
-            error_log("Created NEW MongoDB connection - Process ID: " . getmypid());
+            // error_log("Created NEW MongoDB connection - Process ID: " . getmypid());
         } else {
-            error_log("REUSING MongoDB connection - Process ID: " . getmypid());
+            // error_log("REUSING MongoDB connection - Process ID: " . getmypid());
         }
 
         $this->database = $databaseName;
@@ -459,5 +459,4 @@ class ConsumerDatabase
         $pst = new DateTime('now', new DateTimeZone('America/Los_Angeles'));
         return new MongoDB\BSON\UTCDateTime((time() + $pst->getOffset()) * 1000);
     }
-
 }

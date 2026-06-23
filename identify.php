@@ -107,18 +107,24 @@ $deviceInformation = [
         // 'metrics' => $data['fonts']['metrics'] ?? null,
     ],
 ];
+$email = null;
+$phone = null;
+
+$prepop = $data['prepopData'] ?? null;
 if (
-    isset($data['prepopData']) &&
-    is_array($data['prepopData']) &&
+    !empty($prepop) &&
+    is_array($prepop) &&
     (
-        (isset($data['prepopData']['bhm_email']) && $data['prepopData']['bhm_email'] !== '' && $data['prepopData']['bhm_email'] !== null) ||
-        (isset($data['prepopData']['bhm_phone']) && $data['prepopData']['bhm_phone'] !== '' && $data['prepopData']['bhm_phone'] !== null)
+
+        (!empty($prepop['bhm_email']) || !empty($prepop['email'])) ||
+        (!empty($prepop['bhm_phone']) || !empty($prepop['phone']))
     )
 ) {
 
     // use prepopulated data directly
-    $email = isset($data['prepopData']['bhm_email']) ? $data['prepopData']['bhm_email']  : null;
-    $phone = isset($data['prepopData']['bhm_phone']) ? $data['prepopData']['bhm_phone']  : null;
+    $email = !empty($prepop['bhm_email']) ? $prepop['bhm_email'] : (!empty($prepop['email']) ? $prepop['email'] : null);
+    $phone = !empty($prepop['bhm_phone']) ? $prepop['bhm_phone'] : (!empty($prepop['phone']) ? $prepop['phone'] : null);
+
     $norm = [
         'email' => lc($email),
         'phone' => lc($phone ? normalizeToTenDigits($phone) : null),
@@ -180,8 +186,8 @@ try {
 
     $dataToInsert = [
         '_id' => $fingerprint_hash,
-        "emails" => [],
-        "phones" => [],
+        "emails" => $email ? [lc($email)] : [],
+        "phones" => $phone ? [lc($phone)] : [],
         "pii" => (object)[],
         "employment" => (object)[],
         "financial" => (object)[],
