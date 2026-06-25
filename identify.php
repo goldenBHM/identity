@@ -8,6 +8,7 @@ require_once __DIR__ . '/vendor/autoload.php';
 $env = parse_ini_file(__DIR__ . '/../environments/.env-fingerprint');
 
 require __DIR__ . '/includes/config.php';
+require __DIR__ . '/includes/ConsumerProfile.php';
 
 // ---------- CONFIG ----------
 const FP_VERSION = 'fp-1';
@@ -165,67 +166,56 @@ $visitor_id = $fingerprint_hash;
 $confidence = 0.95;
 
 $savedToDb = false;
+$mongoDbError = null;
 
+// Primitive payload reused for both the live insert and the durable retry queue.
+$payloadFields = [
+    'fingerprint_hash' => $fingerprint_hash,
+    'emails' => $email ? [lc($email)] : [],
+    'phones' => $phone ? [lc($phone)] : [],
+    'fingerprint_data' => $norm,
+    'device_data' => $deviceInformation,
+    'prepop_data' => $data['prepopData'] ?? null,
+    'ip' => $_SERVER['REMOTE_ADDR'] ?? null,
+    'source' => $httpOrigin,
+    'created_at_ms' => (int) floor(microtime(true) * 1000),
+];
+
+$collection = null;
 try {
-    $mongo = new Client($MONGO_URL);
+    // Match the resilient connection settings used by ConsumerDatabase so the
+    // intermittent server-selection failure happens far less often.
+    $mongo = new Client(
+        $MONGO_URL,
+        ['retryWrites' => true, 'retryReads' => true],
+        ['serverSelectionTimeoutMS' => 10000, 'connectTimeoutMS' => 10000, 'socketTimeoutMS' => 30000]
+    );
     $collection = $mongo->selectDatabase($DB_NAME)->selectCollection($COLLECTION_NAME);
 } catch (Throwable $e) {
-    $notifier->handlePhpError(
-        E_USER_WARNING,
-        'MongoDB insert failed: ' . $e->getMessage(),
-        __FILE__,
-        __LINE__
-    );
-
-    http_response_code(500);
-    echo json_encode(['error' => 'MongoDB connection failed', 'detail' => $e->getMessage()]);
-    exit;
+    $mongoDbError = 'connection: ' . $e->getMessage();
+    error_log('MongoDB connection failed: ' . $e->getMessage());
+    $notifier->handlePhpError(E_USER_WARNING, 'MongoDB connection failed: ' . $e->getMessage(), __FILE__, __LINE__);
 }
 
-try {
+if ($collection !== null) {
+    try {
+        //find or create fingerprint record
+        $document = $collection->findOneAndUpdate(
+            ['_id' => $fingerprint_hash],
+            ['$setOnInsert' => buildConsumerDocument($payloadFields)],
+            ['upsert' => true, 'returnDocument' => MongoDB\Operation\FindOneAndUpdate::RETURN_DOCUMENT_AFTER]
+        );
 
-    $dataToInsert = [
-        '_id' => $fingerprint_hash,
-        "emails" => $email ? [lc($email)] : [],
-        "phones" => $phone ? [lc($phone)] : [],
-        "pii" => (object)[],
-        "employment" => (object)[],
-        "financial" => (object)[],
-        "other" => (object)[],
-        "profile_source" => [],
-        "fingerprint_latest" => [
-            'fingerprint_data' => $norm,
-            'device_data' => $deviceInformation,
-            'prepop_data' => $data['prepopData'] ?? null,
-            'ip' => $_SERVER['REMOTE_ADDR'] ?? null,
-            'source' => $httpOrigin,
-        ],
-        'created_at' => new MongoDB\BSON\UTCDateTime(),
-        'updated_at' => new MongoDB\BSON\UTCDateTime(),
-    ];
-
-    //find or create fingerprint record
-    $document = $collection->findOneAndUpdate(
-        ['_id' => $fingerprint_hash],
-        [
-            '$setOnInsert' => $dataToInsert,
-        ],
-        ['upsert' => true, 'returnDocument' => MongoDB\Operation\FindOneAndUpdate::RETURN_DOCUMENT_AFTER]
-
-    );
-
-    if ($document) {
-        $savedToDb = true;
+        if ($document) {
+            $savedToDb = true;
+        } else {
+            $mongoDbError = 'Document not saved';
+        }
+    } catch (Throwable $e) {
+        $mongoDbError = $e->getMessage();
+        error_log('MongoDB insert failed: ' . $e->getMessage());
+        $notifier->handlePhpError(E_USER_WARNING, 'MongoDB insert failed: ' . $e->getMessage(), __FILE__, __LINE__);
     }
-} catch (Throwable $e) {
-    error_log('MongoDB insert failed: ' . $e->getMessage());
-
-    $notifier->handlePhpError(
-        E_USER_WARNING,
-        'MongoDB insert failed: ' . $e->getMessage(),
-        __FILE__,
-        __LINE__
-    );
 }
 
 // ---------- RESPOND ----------
@@ -237,3 +227,13 @@ echo json_encode([
     'saved_to_db' => $savedToDb,
     // 'used'       => $norm,
 ]);
+
+// Flush the response to the client, then capture any failed profile in the
+// durable MySQL retry queue without making the user wait.
+if (function_exists('fastcgi_finish_request')) {
+    fastcgi_finish_request();
+}
+
+if (!$savedToDb) {
+    enqueueFailedConsumer($dbBrightOffers, $fingerprint_hash, $payloadFields, $mongoDbError);
+}
