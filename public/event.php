@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-$env = parse_ini_file(__DIR__ . '/../environments/.env-fingerprint');
-require_once __DIR__ . '/vendor/autoload.php';
-require __DIR__ . '/includes/config.php';
-require __DIR__ . '/includes/ConsumerDatabase.php';
+$env = parse_ini_file(__DIR__ . '/../../environments/.env-fingerprint');
+require_once __DIR__ . '/../vendor/autoload.php';
+require __DIR__ . '/../includes/config.php';
+require __DIR__ . '/../includes/ConsumerDatabase.php';
 
 // CORS
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {

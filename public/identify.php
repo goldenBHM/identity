@@ -4,11 +4,11 @@ declare(strict_types=1);
 
 use MongoDB\Client;
 
-require_once __DIR__ . '/vendor/autoload.php';
-$env = parse_ini_file(__DIR__ . '/../environments/.env-fingerprint');
+require_once __DIR__ . '/../vendor/autoload.php';
+$env = parse_ini_file(__DIR__ . '/../../environments/.env-fingerprint');
 
-require __DIR__ . '/includes/config.php';
-require __DIR__ . '/includes/ConsumerProfile.php';
+require __DIR__ . '/../includes/config.php';
+require __DIR__ . '/../includes/ConsumerProfile.php';
 
 // ---------- CONFIG ----------
 const FP_VERSION = 'fp-1';
