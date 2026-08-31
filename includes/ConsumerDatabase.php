@@ -19,7 +19,7 @@ class ConsumerDatabase
                     'serverSelectionTimeoutMS' => 10000,
                     'connectTimeoutMS' => 10000,
                     'socketTimeoutMS' => 30000,
-                    'maxPoolSize' => 100,
+                    'maxPoolSize' => 5,
                 ]
             );
 
