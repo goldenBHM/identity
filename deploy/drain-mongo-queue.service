@@ -1,0 +1,35 @@
+[Unit]
+Description=Drain mongo_write_queue into MongoDB
+Documentation=file:///var/www/identity/drain_mongo_queue.php
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+
+# Adjust WorkingDirectory/ExecStart to wherever the app is deployed.
+WorkingDirectory=/var/www/identity
+ExecStart=/usr/bin/php /var/www/identity/drain_mongo_queue.php
+
+# The daemon is crash-only: it exits non-zero on any unexpected error and
+# relies on being restarted rather than carrying reconnect logic.
+Restart=always
+RestartSec=5
+
+# SIGTERM lets it finish the row in flight before exiting.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=drain-mongo-queue
+
+# It only needs to reach MySQL and Atlas and read the app directory.
+NoNewPrivileges=true
+PrivateTmp=false
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

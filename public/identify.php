@@ -183,12 +183,18 @@ $payloadFields = [
 
 $collection = null;
 try {
-    // Match the resilient connection settings used by ConsumerDatabase so the
-    // intermittent server-selection failure happens far less often.
+    // These are all URI options and must go in the second argument. Passed as
+    // driverOptions (third argument) libmongoc never reads them, which is how
+    // socketTimeoutMS sat at its 300000 default while this said 30000.
     $mongo = new Client(
         $MONGO_URL,
-        ['retryWrites' => true, 'retryReads' => true],
-        ['serverSelectionTimeoutMS' => 10000, 'connectTimeoutMS' => 10000, 'socketTimeoutMS' => 30000]
+        [
+            'retryWrites' => true,
+            'retryReads' => true,
+            'serverSelectionTimeoutMS' => 10000,
+            'connectTimeoutMS' => 10000,
+            'socketTimeoutMS' => 30000,
+        ]
     );
     $collection = $mongo->selectDatabase($DB_NAME)->selectCollection($COLLECTION_NAME);
 } catch (Throwable $e) {

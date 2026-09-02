@@ -39,15 +39,33 @@ const ALERT_ATTEMPT_THRESHOLD = 10; // alert once a row has failed this many tim
 
 // ---------- CONNECT TO MONGO ----------
 try {
+    // URI options belong in the second argument; as driverOptions (third
+    // argument) libmongoc never reads them.
     $mongo = new Client(
         $MONGO_URL,
-        ['retryWrites' => true, 'retryReads' => true],
-        ['serverSelectionTimeoutMS' => 10000, 'connectTimeoutMS' => 10000, 'socketTimeoutMS' => 30000]
+        [
+            'retryWrites' => true,
+            'retryReads' => true,
+            'serverSelectionTimeoutMS' => 10000,
+            'connectTimeoutMS' => 10000,
+            'socketTimeoutMS' => 30000,
+        ]
     );
     $collection = $mongo->selectDatabase($DB_NAME)->selectCollection($COLLECTION_NAME);
 } catch (Throwable $e) {
-    // Mongo still down — leave the queue intact and try again next run.
+    // Mongo still down — leave the queue intact and try again next run. Alert
+    // too: a cron that aborts every run drains nothing and says nothing.
     error_log('[retry_consumers] Mongo connection failed, aborting run: ' . $e->getMessage());
+    try {
+        $notifier->handlePhpError(
+            E_USER_WARNING,
+            'retry_consumers: MongoDB unreachable, consumer_retry_queue is not draining',
+            __FILE__,
+            __LINE__
+        );
+    } catch (Throwable $ignored) {
+        error_log('[retry_consumers] notifier failed: ' . $ignored->getMessage());
+    }
     exit(1);
 }
 

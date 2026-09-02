@@ -1,21 +1,25 @@
 <?php
 class ConsumerDatabase
 {
-    private static $mongoClient = null; // Static to reuse across requests
+    // Dedupes construction within a single request only — PHP statics reset
+    // between requests. Connections persist across requests via the driver's
+    // own per-process client registry, keyed by URI + options.
+    private static $mongoClient = null;
     private $database;
     private $dbBrightOffers;
 
     public function __construct($mongoUri, $databaseName, $dbBrightOffers)
     {
-        // Reuse existing connection if available
         if (self::$mongoClient === null) {
+            // These are all URI options and must go in the second argument.
+            // Passed as driverOptions (third argument) libmongoc never reads
+            // them, which is how socketTimeoutMS sat at its 300000 default
+            // while this said 30000.
             self::$mongoClient = new MongoDB\Driver\Manager(
                 $mongoUri,
                 [
                     'retryWrites' => true,
                     'retryReads' => true,
-                ],
-                [
                     'serverSelectionTimeoutMS' => 10000,
                     'connectTimeoutMS' => 10000,
                     'socketTimeoutMS' => 30000,
@@ -86,13 +90,14 @@ class ConsumerDatabase
             $result = self::$mongoClient->executeBulkWrite("{$this->database}.events", $bulk);
 
             return $result->getUpsertedCount() > 0 || $result->getModifiedCount() > 0;
-        } catch (MongoDB\Driver\Exception\ConnectionTimeoutException $e) {
-            error_log("MongoDB connection timeout in createBrightOffersVisitOfferEvent: " . $e->getMessage());
-            trigger_error("MongoDB insert failed: " . $e->getMessage(), E_USER_WARNING);
-            return false;
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
+            // Rethrow: this is only reached from drain_mongo_queue.php, which
+            // needs a real failure to know the row must stay queued. Returning
+            // false here would make the drainer delete a write that never
+            // landed. Callers on the request path enqueue instead of calling
+            // this directly, so nothing user-facing sees this exception.
             error_log("MongoDB error in createBrightOffersVisitOfferEvent: " . $e->getMessage());
-            return false;
+            throw $e;
         }
     }
 
@@ -201,13 +206,11 @@ class ConsumerDatabase
             ];
 
             return $this->insertEvent($event);
-        } catch (MongoDB\Driver\Exception\ConnectionTimeoutException $e) {
-            error_log("MongoDB connection timeout in createBrightOffersVisitSurveyEvent: " . $e->getMessage());
-            trigger_error("MongoDB insert failed: " . $e->getMessage(), E_USER_WARNING);
-            return false;
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
+            // Rethrow so the drainer keeps the row queued — see the note in
+            // createBrightOffersVisitOfferEvent.
             error_log("MongoDB error in createBrightOffersVisitSurveyEvent: " . $e->getMessage());
-            return false;
+            throw $e;
         }
     }
 
@@ -294,13 +297,11 @@ class ConsumerDatabase
 
                 return $this->insertEvent($event);
             }
-        } catch (MongoDB\Driver\Exception\ConnectionTimeoutException $e) {
-            error_log("MongoDB connection timeout in createLeadFormVisitWallEvent: " . $e->getMessage());
-            trigger_error("MongoDB insert failed: " . $e->getMessage(), E_USER_WARNING);
-            return false;
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
+            // Rethrow so the drainer keeps the row queued — see the note in
+            // createBrightOffersVisitOfferEvent.
             error_log("MongoDB error in createLeadFormVisitWallEvent: " . $e->getMessage());
-            return false;
+            throw $e;
         }
     }
 
@@ -372,19 +373,18 @@ class ConsumerDatabase
 
                 return $this->insertForm($form);
             }
-        } catch (MongoDB\Driver\Exception\ConnectionTimeoutException $e) {
-            error_log("MongoDB connection timeout in createLeadFormSubmission: " . $e->getMessage());
-            return false;
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
+            // Rethrow so the drainer keeps the row queued — see the note in
+            // createBrightOffersVisitOfferEvent.
             error_log("MongoDB error in createLeadFormSubmission: " . $e->getMessage());
-            return false;
+            throw $e;
         }
     }
 
     /**
-     * Create Lead Form submission
+     * Create Pre Pop form submission
      */
-    public function createPrepopFormSubmission($consumerId, $afid, $prepopData = [], $sessionId)
+    public function createPrepopFormSubmission($consumerId, $afid, $prepopData = [], $sessionId = null)
     {
         try {
             $prepopDataInsert = [];
@@ -406,9 +406,11 @@ class ConsumerDatabase
             ];
 
             return $this->insertForm($form);
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
+            // Rethrow so the drainer keeps the row queued — see the note in
+            // createBrightOffersVisitOfferEvent.
             error_log("MongoDB error in createPrepopFormSubmission: " . $e->getMessage());
-            return false;
+            throw $e;
         }
     }
 
@@ -429,9 +431,16 @@ class ConsumerDatabase
             ];
 
             return $this->insertForm($form);
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
+            // Rethrow so the drainer keeps the row queued — see the note in
+            // createBrightOffersVisitOfferEvent.
+            //
+            // Note this method is also called from within
+            // createBrightOffersVisitSurveyEvent, which previously swallowed a
+            // failure here and still wrote the event. It now fails the whole
+            // survey event so the drainer retries both together.
             error_log("MongoDB error in createSurveySubmission: " . $e->getMessage());
-            return false;
+            throw $e;
         }
     }
 

@@ -1,22 +1,11 @@
 <?php
 
-/**
- * event.php — analytics event intake.
- *
- * Writes are queued to MySQL and performed by drain_mongo_queue.php, so this
- * endpoint never opens a MongoDB connection and never blocks on one. A visitor's
- * page load should not wait on an analytics insert, and a slow or re-electing
- * cluster must not be able to hold php-fpm workers.
- *
- * The pre-queue version is kept at backup/event-2026-09-02.php.
- */
-
 declare(strict_types=1);
 
 $env = parse_ini_file(__DIR__ . '/../../environments/.env-fingerprint');
 require_once __DIR__ . '/../vendor/autoload.php';
 require __DIR__ . '/../includes/config.php';
-require __DIR__ . '/../includes/MongoWriteQueue.php';
+require __DIR__ . '/../includes/ConsumerDatabase.php';
 
 // CORS
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
@@ -61,37 +50,39 @@ $adUnitId = $post['adunitid'] ?? null;
 $creatives = $post['creatives'] ?? [];
 $publisherData = $post['p_data'] ?? [];
 
+$db = new ConsumerDatabase($env['MONGO_URL'], 'consumer_db', $dbBrightOffers);
+
 
 switch ($eventType) {
     case 'brightoffers_visit_offer':
         $creatives = $post['creatives'] ?? [];
 
-        MongoWriteQueue::enqueue($dbBrightOffers, 'createBrightOffersVisitOfferEvent', [
-            'consumerId'             => $consumerId,
-            'parentBrightOffersAdId' => $parentBrightOffersAdId,
-            'campaignKey'            => $campaignId,
-            'adUnitId'               => $adUnitId,
-            'childBrightOffersAdId'  => $childBrightOffersAdId,
-            'parentEverflowTid'      => $parentEverflowTid,
-            'childEverflowTid'       => $childEverflowTid,
-            'creatives'              => $creatives,
-            'publisherData'          => $publisherData,
-        ], $notifier);
+        $result = $db->createBrightOffersVisitOfferEvent(
+            $consumerId,
+            $parentBrightOffersAdId,
+            $campaignId,
+            $adUnitId,
+            $childBrightOffersAdId,
+            $parentEverflowTid,
+            $childEverflowTid,
+            $creatives,
+            $publisherData
+        );
         break;
 
     case 'brightoffers_visit_survey':
         $surveyId = $post['survey_id'] ?? null;
         $surveyAnswered = isset($post['survey_answered']) ? (bool)$post['survey_answered'] : false;
 
-        MongoWriteQueue::enqueue($dbBrightOffers, 'createBrightOffersVisitSurveyEvent', [
-            'consumerId'             => $consumerId,
-            'parentBrightOffersAdId' => $parentBrightOffersAdId,
-            'campaignKey'            => $campaignId,
-            'surveyId'               => $surveyId,
-            'surveyAnswered'         => $surveyAnswered,
-            'parentEverflowTid'      => $parentEverflowTid,
-            'publisherData'          => $publisherData,
-        ], $notifier);
+        $result = $db->createBrightOffersVisitSurveyEvent(
+            $consumerId,
+            $parentBrightOffersAdId,
+            $campaignId,
+            $surveyId,
+            $surveyAnswered,
+            $parentEverflowTid,
+            $publisherData,
+        );
         break;
 
     case 'lead_form_visit_wall':
@@ -100,15 +91,15 @@ switch ($eventType) {
         $domain = $post['form_domain'];
         $formQuestions = $post['form_questions'] ?? [];
 
-        MongoWriteQueue::enqueue($dbBrightOffers, 'createLeadFormVisitWallEvent', [
-            'consumerId'             => $consumerId,
-            'formDomain'             => $domain,
-            'parentBrightOffersAdId' => $parentBrightOffersAdId,
-            'childBrightOffersAdId'  => $childBrightOffersAdId,
-            'parentEverflowTid'      => $parentEverflowTid,
-            'childEverflowTid'       => $childEverflowTid,
-            'formQuestions'          => $formQuestions,
-        ], $notifier);
+        $db->createLeadFormVisitWallEvent(
+            $consumerId,
+            $domain,
+            $parentBrightOffersAdId,
+            $childBrightOffersAdId,
+            $parentEverflowTid,
+            $childEverflowTid,
+            $formQuestions,
+        );
         break;
 
     default:
@@ -119,5 +110,3 @@ switch ($eventType) {
         ]);
         exit;
 }
-
-exit(0);
