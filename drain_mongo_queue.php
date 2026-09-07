@@ -138,7 +138,16 @@ $consecutiveOutages = 0;
 
 while ($running) {
     try {
-        [$processed, $clusterDown] = drainBatch($dbBrightOffers, $mongo, $notifier);
+        // After repeated failures, stop batching and replay one row at a time.
+        // A batch that keeps timing out retries the same rows forever without
+        // charging attempts — correct during a real outage, but a livelock if
+        // the batch is simply too large to finish inside socketTimeoutMS. One
+        // op is ~25x less work, so if anything can get through, a single row
+        // can; and if singles fail too it is a genuine outage and backing off
+        // indefinitely is the right behaviour.
+        $forceSingly = $consecutiveOutages >= 2;
+
+        [$processed, $clusterDown] = drainBatch($dbBrightOffers, $mongo, $notifier, $forceSingly);
 
         if ($clusterDown) {
             // Not the rows' fault — don't burn their attempt budget. Back off
@@ -206,8 +215,29 @@ function isConnectionFailure(Throwable $e): bool
     // The driver does not always chain the cause as a previous exception — the
     // bulk write wrapper only names it in the message. Observed in production:
     // "Bulk write failed due to previous ...ConnectionTimeoutException: ..."
-    return str_contains($e->getMessage(), 'ConnectionTimeoutException')
-        || str_contains($e->getMessage(), 'ConnectionException');
+    $message = $e->getMessage();
+
+    foreach ([
+        'ConnectionTimeoutException',
+        'ConnectionException',
+        // Replica-set state changes arrive as server errors, not connection
+        // errors, but mean the same thing here: there is no primary to write to,
+        // and it is not this row's fault. Charging attempts for these would park
+        // the queue during an ordinary failover. Seen in production as
+        // "Not primary so we cannot begin or continue a transaction".
+        'not primary',
+        'not master',        // pre-5.0 wording for the same condition
+        'NotWritablePrimary',
+        'node is recovering',
+        'ReplicaSetNoPrimary',
+        'No suitable servers found',
+    ] as $needle) {
+        if (stripos($message, $needle) !== false) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 /**
@@ -221,7 +251,7 @@ function isConnectionFailure(Throwable $e): bool
  *
  * @return array{0:int,1:bool} [rows processed, cluster looked unreachable]
  */
-function drainBatch(mysqli $sql, ConsumerDatabase $mongo, $notifier): array
+function drainBatch(mysqli $sql, ConsumerDatabase $mongo, $notifier, bool $forceSingly = false): array
 {
     $res = $sql->query(
         "SELECT id, method, args, attempts FROM mongo_write_queue
@@ -271,7 +301,7 @@ function drainBatch(mysqli $sql, ConsumerDatabase $mongo, $notifier): array
             $i++;
         }
 
-        if (count($run) > 1 && isset(BATCHABLE_METHODS[$method])) {
+        if (!$forceSingly && count($run) > 1 && isset(BATCHABLE_METHODS[$method])) {
             [$done, $clusterDown] = drainRunBatched($run, $method, $mongo, $del, $fail, $notifier);
         } else {
             [$done, $clusterDown] = drainRunSingly($run, $mongo, $del, $fail, $notifier);
@@ -337,6 +367,8 @@ function drainRunBatched(
             // that is why BATCH_WRITE_SIZE is small.
             fwrite(STDERR, '[drain] connection error in batch of ' . count($run)
                 . ' ' . $method . ': ' . $e->getMessage() . "\n");
+            error_log('[drain] batch abandoned (' . count($run) . ' rows, ' . $method . '): ' . $e->getMessage());
+            notify($notifier, 'drain_mongo_queue: batch abandoned, MongoDB write unreachable (' . get_class($e) . ')');
             return [0, true];
         }
 
@@ -363,7 +395,10 @@ function drainRunBatched(
 
         // Unknown failure with no usable per-operation detail. Fall back to
         // replaying the run individually so one bad row cannot block the rest.
+        fwrite(STDERR, '[drain] batch of ' . count($run) . ' ' . $method
+            . ' failed, retrying singly: ' . $e->getMessage() . "\n");
         error_log("[drain] batch of " . count($run) . " {$method} failed, retrying singly: " . $e->getMessage());
+        notify($notifier, 'drain_mongo_queue: batch failed opaquely, replaying singly (' . get_class($e) . ')');
 
         return drainRunSingly($run, $mongo, $del, $fail, $notifier);
     }
@@ -418,6 +453,8 @@ function drainRunSingly(
                 // counting that against them would park the whole queue during a
                 // transient outage. Leave this row untouched and signal backoff.
                 fwrite(STDERR, "[drain] connection error on id={$id}: " . $e->getMessage() . "\n");
+                error_log("[drain] connection error on id={$id} {$method}: " . $e->getMessage());
+                notify($notifier, 'drain_mongo_queue: row abandoned, MongoDB write unreachable (' . get_class($e) . ')');
                 return [$processed, true];
             }
 
