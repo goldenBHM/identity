@@ -51,6 +51,9 @@ validateRequestData($requiredParams, $post);
 $consumerId = $post['uuid'] ?? null;
 $formType = $post['form_type'] ?? null;
 
+// Stamped here, not in the drainer — see event.php.
+$occurredAtMs = (int) floor(microtime(true) * 1000);
+
 $allowedFormTypes = ['Survey', 'Pre Pop', 'Lead Form'];
 if (!in_array($formType, $allowedFormTypes)) {
     http_response_code(400);
@@ -67,6 +70,7 @@ switch ($formType) {
             'consumerId'    => $consumerId,
             'surveyId'      => $surveyId,
             'surveyAnswers' => $surveyAnswers,
+            'occurredAtMs' => $occurredAtMs,
         ], $notifier);
         break;
 
@@ -80,6 +84,7 @@ switch ($formType) {
             'afid'       => $affiliateId,
             'prepopData' => $prepopData,
             'sessionId'  => $sessionId,
+            'occurredAtMs' => $occurredAtMs,
         ], $notifier);
         break;
 
@@ -95,6 +100,7 @@ switch ($formType) {
             'domain'      => $domain,
             'landingPage' => $landingPage,
             'formAnswers' => $formAnswers,
+            'occurredAtMs' => $occurredAtMs,
         ], $notifier);
         break;
 

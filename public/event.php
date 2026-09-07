@@ -61,6 +61,10 @@ $adUnitId = $post['adunitid'] ?? null;
 $creatives = $post['creatives'] ?? [];
 $publisherData = $post['p_data'] ?? [];
 
+// Stamped here, not in the drainer: the queue replays writes later, so the
+// document must carry when the event actually happened.
+$occurredAtMs = (int) floor(microtime(true) * 1000);
+
 
 switch ($eventType) {
     case 'brightoffers_visit_offer':
@@ -76,6 +80,7 @@ switch ($eventType) {
             'childEverflowTid'       => $childEverflowTid,
             'creatives'              => $creatives,
             'publisherData'          => $publisherData,
+            'occurredAtMs'           => $occurredAtMs,
         ], $notifier);
         break;
 
@@ -91,6 +96,7 @@ switch ($eventType) {
             'surveyAnswered'         => $surveyAnswered,
             'parentEverflowTid'      => $parentEverflowTid,
             'publisherData'          => $publisherData,
+            'occurredAtMs'           => $occurredAtMs,
         ], $notifier);
         break;
 
@@ -108,6 +114,7 @@ switch ($eventType) {
             'parentEverflowTid'      => $parentEverflowTid,
             'childEverflowTid'       => $childEverflowTid,
             'formQuestions'          => $formQuestions,
+            'occurredAtMs'           => $occurredAtMs,
         ], $notifier);
         break;
 

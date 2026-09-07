@@ -51,39 +51,22 @@ class ConsumerDatabase
         $parentEverflowTid = null,
         $childEverflowTid = null,
         $creatives = [],
-        $publisherData = []
+        $publisherData = [],
+        $occurredAtMs = null
     ) {
         try {
-            $filter = [
-                'consumer_id' => $consumerId,
-                'parent_brightoffers_ad_id' => $parentBrightOffersAdId,
-                'child_brightoffers_ad_id' => $childBrightOffersAdId,
-                'parent_everflow_transaction_id' => $parentEverflowTid,
-                'child_everflow_transaction_id' => $childEverflowTid,
-                'event_source' => 'BrightOffers',
-                'event_type' => 'brightoffers_visit_offer'
-            ];
-
-            // Atomic upsert: $setOnInsert only fires on insert, eliminating the
-            // read-then-write race condition when two requests arrive simultaneously.
-            $update = [
-                '$setOnInsert' => [
-                    'timestamp' => $this->nowPst(),
-                    'event_specific_data.campaign_key' => $campaignKey,
-                    'event_specific_data.ad_unit_id' => $adUnitId,
-                    'event_specific_data.publisher_specific_data' => $publisherData,
-                ]
-            ];
-
-            if (empty($creatives)) {
-                // Initialize the array on insert; no-op on update
-                $update['$setOnInsert']['event_specific_data.creatives'] = [];
-            } else {
-                // $push runs on both insert (creates the array) and update (appends)
-                $update['$push'] = [
-                    'event_specific_data.creatives' => ['$each' => $creatives]
-                ];
-            }
+            [$filter, $update] = $this->buildVisitOfferEventOp(
+                $consumerId,
+                $parentBrightOffersAdId,
+                $campaignKey,
+                $adUnitId,
+                $childBrightOffersAdId,
+                $parentEverflowTid,
+                $childEverflowTid,
+                $creatives,
+                $publisherData,
+                $occurredAtMs
+            );
 
             $bulk = new MongoDB\Driver\BulkWrite();
             $bulk->update($filter, $update, ['multi' => false, 'upsert' => true]);
@@ -102,6 +85,107 @@ class ConsumerDatabase
     }
 
     /**
+     * Replay many visit-offer events in a single round trip.
+     *
+     * Same operation as createBrightOffersVisitOfferEvent — an upsert per event,
+     * each with its own filter and update document — just batched into one
+     * BulkWrite. That amortises the network round trip and the w=majority
+     * acknowledgement across the whole batch, which is where nearly all of the
+     * per-write cost lives when the drainer is 0.2% CPU and 99.8% waiting.
+     *
+     * The BulkWrite is ordered (the driver's default), so operations apply
+     * sequentially in the order added. Two batched rows targeting the same event
+     * document behave exactly as two separate round trips would: the first
+     * upserts it, the second appends its creatives.
+     *
+     * Only used by drain_mongo_queue.php. On failure it throws, and the caller
+     * maps MongoDB\Driver\WriteError::getIndex() back to queue rows to decide
+     * which committed.
+     *
+     * @param array $argSets One associative array per event, keyed by the
+     *                       parameter names of createBrightOffersVisitOfferEvent.
+     * @return MongoDB\Driver\WriteResult Batch totals, not per-row outcomes.
+     */
+    public function createBrightOffersVisitOfferEventBatch(array $argSets): MongoDB\Driver\WriteResult
+    {
+        if (!$argSets) {
+            throw new InvalidArgumentException('createBrightOffersVisitOfferEventBatch: empty batch');
+        }
+
+        $bulk = new MongoDB\Driver\BulkWrite();
+
+        foreach ($argSets as $args) {
+            [$filter, $update] = $this->buildVisitOfferEventOp(
+                $args['consumerId'] ?? null,
+                $args['parentBrightOffersAdId'] ?? null,
+                $args['campaignKey'] ?? null,
+                $args['adUnitId'] ?? null,
+                $args['childBrightOffersAdId'] ?? null,
+                $args['parentEverflowTid'] ?? null,
+                $args['childEverflowTid'] ?? null,
+                $args['creatives'] ?? [],
+                $args['publisherData'] ?? [],
+                $args['occurredAtMs'] ?? null
+            );
+
+            $bulk->update($filter, $update, ['multi' => false, 'upsert' => true]);
+        }
+
+        return self::$mongoClient->executeBulkWrite("{$this->database}.events", $bulk);
+    }
+
+    /**
+     * Build the filter and update for one visit-offer upsert.
+     *
+     * Shared by the single and batched paths so the two can never drift.
+     */
+    private function buildVisitOfferEventOp(
+        $consumerId,
+        $parentBrightOffersAdId,
+        $campaignKey,
+        $adUnitId,
+        $childBrightOffersAdId,
+        $parentEverflowTid,
+        $childEverflowTid,
+        $creatives,
+        $publisherData,
+        $occurredAtMs
+    ): array {
+        $filter = [
+            'consumer_id' => $consumerId,
+            'parent_brightoffers_ad_id' => $parentBrightOffersAdId,
+            'child_brightoffers_ad_id' => $childBrightOffersAdId,
+            'parent_everflow_transaction_id' => $parentEverflowTid,
+            'child_everflow_transaction_id' => $childEverflowTid,
+            'event_source' => 'BrightOffers',
+            'event_type' => 'brightoffers_visit_offer'
+        ];
+
+        // Atomic upsert: $setOnInsert only fires on insert, eliminating the
+        // read-then-write race condition when two requests arrive simultaneously.
+        $update = [
+            '$setOnInsert' => [
+                'timestamp' => $this->nowPst($occurredAtMs),
+                'event_specific_data.campaign_key' => $campaignKey,
+                'event_specific_data.ad_unit_id' => $adUnitId,
+                'event_specific_data.publisher_specific_data' => $publisherData,
+            ]
+        ];
+
+        if (empty($creatives)) {
+            // Initialize the array on insert; no-op on update
+            $update['$setOnInsert']['event_specific_data.creatives'] = [];
+        } else {
+            // $push runs on both insert (creates the array) and update (appends)
+            $update['$push'] = [
+                'event_specific_data.creatives' => ['$each' => $creatives]
+            ];
+        }
+
+        return [$filter, $update];
+    }
+
+    /**
      * Create or Update BrightOffers visit survey event
      * If matching event exists (by parent_brightoffers_ad_id + consumer_id), update fields
      */
@@ -113,6 +197,7 @@ class ConsumerDatabase
         $surveyAnswered,
         $parentEverflowTid = null,
         $publisherData = [],
+        $occurredAtMs = null,
     ) {
         try {
             $childBrightOffersAdId = null;
@@ -150,7 +235,7 @@ class ConsumerDatabase
                 }
                 // log form submission
 
-                $this->createSurveySubmission($consumerId, $surveyId, $formAnswers);
+                $this->createSurveySubmission($consumerId, $surveyId, $formAnswers, $occurredAtMs);
 
                 if ($existingEvent) {
                     // the survey visit event already exists
@@ -195,7 +280,7 @@ class ConsumerDatabase
                 'child_brightoffers_ad_id' => $childBrightOffersAdId,
                 'parent_everflow_transaction_id' => $parentEverflowTid,
                 'child_everflow_transaction_id' => null,
-                'timestamp' => $this->nowPst(),
+                'timestamp' => $this->nowPst($occurredAtMs),
                 'event_source' => 'BrightOffers',
                 'event_type' => 'brightoffers_visit_survey',
                 'event_specific_data' => [
@@ -227,7 +312,8 @@ class ConsumerDatabase
         $childBrightOffersAdId = null,
         $parentEverflowTid = null,
         $childEverflowTid = null,
-        $formQuestions = []
+        $formQuestions = [],
+        $occurredAtMs = null
     ) {
         try {
             // Check if event already exists (by consumer_id + parent_everflow_transaction_id)
@@ -286,7 +372,7 @@ class ConsumerDatabase
                     'child_brightoffers_ad_id' => $childBrightOffersAdId,
                     'parent_everflow_transaction_id' => $parentEverflowTid,
                     'child_everflow_transaction_id' => $childEverflowTid,
-                    'timestamp' => $this->nowPst(),
+                    'timestamp' => $this->nowPst($occurredAtMs),
                     'event_source' => 'Lead Forms',
                     'event_type' => 'lead_form_visit_wall',
                     'event_specific_data' => [
@@ -327,7 +413,7 @@ class ConsumerDatabase
      * @param object|array $formAnswers - Form answers as object (e.g., {"email": "test@example.com", "phone": "+1234567890"})
      * @return bool - Success status
      */
-    public function createLeadFormSubmission($consumerId, $domain, $landingPage, $formAnswers = [])
+    public function createLeadFormSubmission($consumerId, $domain, $landingPage, $formAnswers = [], $occurredAtMs = null)
     {
         try {
             // Check if form already exists (by consumer_id + domain)
@@ -363,7 +449,7 @@ class ConsumerDatabase
                 $form = [
                     'consumer_id' => $consumerId,
                     'form_type' => 'Lead Form',
-                    'timestamp' => $this->nowPst(),
+                    'timestamp' => $this->nowPst($occurredAtMs),
                     'form_specific_data' => [
                         'domain' => $domain,
                         'landing_page' => $landingPage,
@@ -384,7 +470,7 @@ class ConsumerDatabase
     /**
      * Create Pre Pop form submission
      */
-    public function createPrepopFormSubmission($consumerId, $afid, $prepopData = [], $sessionId = null)
+    public function createPrepopFormSubmission($consumerId, $afid, $prepopData = [], $sessionId = null, $occurredAtMs = null)
     {
         try {
             $prepopDataInsert = [];
@@ -397,7 +483,7 @@ class ConsumerDatabase
             $form = [
                 'consumer_id' => $consumerId,
                 'form_type' => 'Pre Pop',
-                'timestamp' => $this->nowPst(),
+                'timestamp' => $this->nowPst($occurredAtMs),
                 'form_specific_data' => [
                     'publisher_id' => $afid,
                     'pre_pop_data' => $prepopDataInsert
@@ -417,13 +503,13 @@ class ConsumerDatabase
     /**
      * Create Survey submission
      */
-    public function createSurveySubmission($consumerId, $surveyId, $surveyAnswers = [])
+    public function createSurveySubmission($consumerId, $surveyId, $surveyAnswers = [], $occurredAtMs = null)
     {
         try {
             $form = [
                 'consumer_id' => $consumerId,
                 'form_type' => 'Survey',
-                'timestamp' => $this->nowPst(),
+                'timestamp' => $this->nowPst($occurredAtMs),
                 'form_specific_data' => [
                     'survey_id' => $surveyId,
                     'survey_answers' => $surveyAnswers
@@ -460,12 +546,24 @@ class ConsumerDatabase
     // ==================== UTILITY METHODS ====================
 
     /**
-     * Returns a UTCDateTime representing the current time in PST/PDT (America/Los_Angeles).
+     * Returns a UTCDateTime in PST/PDT (America/Los_Angeles).
      * Stores the local PST clock time so timestamps read correctly without timezone conversion.
+     *
+     * Pass $occurredAtMs to stamp when the event actually happened rather than
+     * when this runs. Writes now go through the write-behind queue, so "now" is
+     * drain time — which during a backlog can be hours after the user action.
+     * Every queued call carries a request-time millisecond epoch so replayed
+     * documents keep their real timestamps and time-series stay accurate.
+     *
+     * The UTC offset is resolved for that instant rather than for the current
+     * moment, so a backlog spanning a DST change is still stamped correctly.
      */
-    private function nowPst(): MongoDB\BSON\UTCDateTime
+    private function nowPst(?int $occurredAtMs = null): MongoDB\BSON\UTCDateTime
     {
-        $pst = new DateTime('now', new DateTimeZone('America/Los_Angeles'));
-        return new MongoDB\BSON\UTCDateTime((time() + $pst->getOffset()) * 1000);
+        $ms = $occurredAtMs ?? (int) floor(microtime(true) * 1000);
+        $offset = (new DateTimeZone('America/Los_Angeles'))
+            ->getOffset(new DateTimeImmutable('@' . intdiv($ms, 1000)));
+
+        return new MongoDB\BSON\UTCDateTime($ms + $offset * 1000);
     }
 }

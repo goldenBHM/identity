@@ -40,7 +40,12 @@ require __DIR__ . '/includes/config.php';
 require __DIR__ . '/includes/ConsumerDatabase.php';
 require __DIR__ . '/includes/MongoWriteQueue.php';
 
-const BATCH_SIZE          = 100;
+const BATCH_SIZE          = 100;   // rows fetched from MySQL per pass
+// Operations per BulkWrite. Kept small on purpose: if a batch times out, which
+// operations committed is unknown, so the rows are replayed — and replaying a
+// committed $push duplicates creatives. This caps that exposure per incident
+// while still removing ~96% of the round trips and w=majority waits.
+const BATCH_WRITE_SIZE    = 25;
 const IDLE_SLEEP_SECONDS  = 1;
 const MAX_ATTEMPTS        = 10;    // past this a row is parked, not retried
 const BACKOFF_START       = 5;     // seconds, when the cluster is unreachable
@@ -153,7 +158,46 @@ exit(0);
 
 
 /**
+ * Does this exception, or anything it wraps, indicate a connection failure?
+ *
+ * A bulk write that times out surfaces as BulkWriteException, which extends
+ * ServerException — NOT ConnectionException. Matching on the top-level class
+ * therefore misses the most common failure path entirely, so the backoff never
+ * fires and every row in the batch burns an attempt instead. Walk the chain.
+ */
+function isConnectionFailure(Throwable $e): bool
+{
+    for ($x = $e; $x !== null; $x = $x->getPrevious()) {
+        if ($x instanceof MongoDB\Driver\Exception\ConnectionException) {
+            return true;
+        }
+    }
+
+    // The driver does not always chain the cause as a previous exception — the
+    // bulk write wrapper only names it in the message. Observed in production:
+    // "Bulk write failed due to previous ...ConnectionTimeoutException: ..."
+    return str_contains($e->getMessage(), 'ConnectionTimeoutException')
+        || str_contains($e->getMessage(), 'ConnectionException');
+}
+
+/**
+ * Methods that can be replayed as one batched BulkWrite.
+ *
+ * Only single-operation writes with no reads qualify. The survey and lead-form
+ * methods query first and branch on the result, so they must stay one at a time.
+ */
+const BATCHABLE_METHODS = [
+    'createBrightOffersVisitOfferEvent' => 'createBrightOffersVisitOfferEventBatch',
+];
+
+/**
  * Process up to BATCH_SIZE queued writes.
+ *
+ * Rows are consumed in strict id order. Leading runs of the same batchable
+ * method are sent as one BulkWrite; everything else is replayed one at a time.
+ * Grouping by *consecutive run* rather than by method keeps global insertion
+ * order intact — which matters because $push order determines the order of the
+ * creatives array.
  *
  * @return array{0:int,1:bool} [rows processed, cluster looked unreachable]
  */
@@ -187,16 +231,147 @@ function drainBatch(mysqli $sql, ConsumerDatabase $mongo, $notifier): array
     }
 
     $processed = 0;
+    $i = 0;
+    $total = count($rows);
 
-    foreach ($rows as $row) {
+    while ($i < $total) {
         if (!$GLOBALS['running']) {
             break; // SIGTERM arrived — stop cleanly between rows
         }
 
-        $id       = (int) $row['id'];
-        $method   = (string) $row['method'];
-        $attempts = (int) $row['attempts'];
-        $args     = json_decode((string) $row['args'], true);
+        // Take the leading run of consecutive rows sharing one method.
+        $method = (string) $rows[$i]['method'];
+        $run = [];
+        while (
+            $i < $total
+            && (string) $rows[$i]['method'] === $method
+            && count($run) < BATCH_WRITE_SIZE
+        ) {
+            $run[] = $rows[$i];
+            $i++;
+        }
+
+        if (count($run) > 1 && isset(BATCHABLE_METHODS[$method])) {
+            [$done, $clusterDown] = drainRunBatched($run, $method, $mongo, $del, $fail, $notifier);
+        } else {
+            [$done, $clusterDown] = drainRunSingly($run, $mongo, $del, $fail, $notifier);
+        }
+
+        $processed += $done;
+
+        if ($clusterDown) {
+            $del->close();
+            $fail->close();
+            return [$processed, true];
+        }
+    }
+
+    $del->close();
+    $fail->close();
+
+    return [$processed, false];
+}
+
+/**
+ * Replay a run of same-method rows as one BulkWrite.
+ *
+ * @return array{0:int,1:bool} [rows resolved, cluster looked unreachable]
+ */
+function drainRunBatched(
+    array $run,
+    string $method,
+    ConsumerDatabase $mongo,
+    mysqli_stmt $del,
+    mysqli_stmt $fail,
+    $notifier
+): array {
+    $argSets = [];
+    foreach ($run as $row) {
+        $args = json_decode((string) $row['args'], true);
+        if (!is_array($args)) {
+            // A row we cannot decode must be charged an attempt individually,
+            // so drop the whole run to the per-row path rather than guessing
+            // which rows a partial batch covered.
+            return drainRunSingly($run, $mongo, $del, $fail, $notifier);
+        }
+        $argSets[] = $args;
+    }
+
+    $batchMethod = BATCHABLE_METHODS[$method];
+
+    try {
+        $mongo->{$batchMethod}($argSets);
+
+        // Whole batch committed.
+        foreach ($run as $row) {
+            $id = (int) $row['id'];
+            $del->bind_param('i', $id);
+            $del->execute();
+        }
+
+        return [count($run), false];
+    } catch (Throwable $e) {
+        if (isConnectionFailure($e)) {
+            // Which operations committed is unknown, so leave every row queued
+            // and back off. Replaying a committed $push duplicates creatives —
+            // that is why BATCH_WRITE_SIZE is small.
+            fwrite(STDERR, '[drain] connection error in batch of ' . count($run)
+                . ' ' . $method . ': ' . $e->getMessage() . "\n");
+            return [0, true];
+        }
+
+        if ($e instanceof MongoDB\Driver\Exception\BulkWriteException) {
+            $errors = $e->getWriteResult()->getWriteErrors();
+
+            if ($errors) {
+                // The BulkWrite is ordered, so execution stopped at the first
+                // error: everything before it committed, everything after it
+                // never ran and stays queued for the next pass.
+                $failedIndex = $errors[0]->getIndex();
+
+                for ($k = 0; $k < $failedIndex; $k++) {
+                    $id = (int) $run[$k]['id'];
+                    $del->bind_param('i', $id);
+                    $del->execute();
+                }
+
+                chargeAttempt($run[$failedIndex], $method, $errors[0]->getMessage(), $fail, $notifier);
+
+                return [$failedIndex + 1, false];
+            }
+        }
+
+        // Unknown failure with no usable per-operation detail. Fall back to
+        // replaying the run individually so one bad row cannot block the rest.
+        error_log("[drain] batch of " . count($run) . " {$method} failed, retrying singly: " . $e->getMessage());
+
+        return drainRunSingly($run, $mongo, $del, $fail, $notifier);
+    }
+}
+
+/**
+ * Replay rows one at a time — the original path, used for non-batchable
+ * methods, single-row runs, and as the fallback when a batch fails opaquely.
+ *
+ * @return array{0:int,1:bool} [rows resolved, cluster looked unreachable]
+ */
+function drainRunSingly(
+    array $run,
+    ConsumerDatabase $mongo,
+    mysqli_stmt $del,
+    mysqli_stmt $fail,
+    $notifier
+): array {
+    $processed = 0;
+
+    foreach ($run as $row) {
+        if (!$GLOBALS['running']) {
+            break;
+        }
+
+        $id     = (int) $row['id'];
+        $method = (string) $row['method'];
+        $args   = json_decode((string) $row['args'], true);
 
         try {
             if (!in_array($method, MongoWriteQueue::ALLOWED_METHODS, true)) {
@@ -217,35 +392,38 @@ function drainBatch(mysqli $sql, ConsumerDatabase $mongo, $notifier): array
             $del->bind_param('i', $id);
             $del->execute();
             $processed++;
-        } catch (MongoDB\Driver\Exception\ConnectionException $e) {
-            // Cluster-level: every remaining row would fail the same way, and
-            // counting that against them would park the whole queue during a
-            // transient outage. Leave this row untouched and signal backoff.
-            fwrite(STDERR, "[drain] connection error on id={$id}: " . $e->getMessage() . "\n");
-            $del->close();
-            $fail->close();
-            return [$processed, true];
         } catch (Throwable $e) {
-            // Row-level: bad payload, validation failure, unknown method.
-            $err = substr($e->getMessage(), 0, 2000);
-            $fail->bind_param('si', $err, $id);
-            $fail->execute();
-            $processed++;
-            error_log("[drain] id={$id} {$method} failed (attempt " . ($attempts + 1) . "): {$err}");
-
-            if ($attempts + 1 === MAX_ATTEMPTS) {
-                $notifier->handlePhpError(
-                    E_USER_WARNING,
-                    "mongo_write_queue: id={$id} {$method} parked after " . MAX_ATTEMPTS . " attempts: {$err}",
-                    __FILE__,
-                    __LINE__
-                );
+            if (isConnectionFailure($e)) {
+                // Cluster-level: every remaining row would fail the same way, and
+                // counting that against them would park the whole queue during a
+                // transient outage. Leave this row untouched and signal backoff.
+                fwrite(STDERR, "[drain] connection error on id={$id}: " . $e->getMessage() . "\n");
+                return [$processed, true];
             }
+
+            chargeAttempt($row, $method, $e->getMessage(), $fail, $notifier);
+            $processed++;
         }
     }
 
-    $del->close();
-    $fail->close();
-
     return [$processed, false];
+}
+
+/**
+ * Record a row-level failure and alert once the row is about to be parked.
+ */
+function chargeAttempt(array $row, string $method, string $message, mysqli_stmt $fail, $notifier): void
+{
+    $id       = (int) $row['id'];
+    $attempts = (int) $row['attempts'];
+    $err      = substr($message, 0, 2000);
+
+    $fail->bind_param('si', $err, $id);
+    $fail->execute();
+
+    error_log("[drain] id={$id} {$method} failed (attempt " . ($attempts + 1) . "): {$err}");
+
+    if ($attempts + 1 === MAX_ATTEMPTS) {
+        notify($notifier, 'mongo_write_queue: a row was parked after ' . MAX_ATTEMPTS . ' failed attempts');
+    }
 }
