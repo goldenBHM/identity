@@ -22,7 +22,14 @@ class ConsumerDatabase
                     'retryReads' => true,
                     'serverSelectionTimeoutMS' => 10000,
                     'connectTimeoutMS' => 10000,
-                    'socketTimeoutMS' => 30000,
+                    // Generous on purpose. This class is now instantiated only
+                    // by drain_mongo_queue.php — the endpoints enqueue instead
+                    // of calling it — so there is no php-fpm worker to protect
+                    // and no user waiting. A batch that exceeds this aborts
+                    // with the reply unread, which loses the whole batch's work
+                    // and risks replaying writes that already committed. Better
+                    // to wait than to give up on 25 upserts.
+                    'socketTimeoutMS' => 60000,
                     'maxPoolSize' => 5,
                 ]
             );

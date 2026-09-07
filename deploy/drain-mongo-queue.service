@@ -18,9 +18,11 @@ ExecStart=/usr/bin/php /var/www/identity/drain_mongo_queue.php
 Restart=always
 RestartSec=5
 
-# SIGTERM lets it finish the row in flight before exiting.
+# SIGTERM lets it finish the row in flight before exiting. Must exceed
+# socketTimeoutMS (60s in ConsumerDatabase) or a shutdown landing mid-batch gets
+# SIGKILLed instead of stopping cleanly.
 KillSignal=SIGTERM
-TimeoutStopSec=30
+TimeoutStopSec=75
 
 StandardOutput=journal
 StandardError=journal
