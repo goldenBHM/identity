@@ -54,6 +54,20 @@ const OUTAGE_ALERT_AFTER  = 3;     // consecutive failed batches before alerting
 const LOCK_FILE           = '/tmp/drain_mongo_queue.lock';
 
 /**
+ * Methods that can be replayed as one batched BulkWrite.
+ *
+ * Only single-operation writes with no reads qualify. The survey and lead-form
+ * methods query first and branch on the result, so they must stay one at a time.
+ *
+ * Must be declared here, above the main loop. Functions are hoisted at compile
+ * time but top-level const statements are not — declared further down the file
+ * it would sit after exit(0) and never be defined when drainBatch() reads it.
+ */
+const BATCHABLE_METHODS = [
+    'createBrightOffersVisitOfferEvent' => 'createBrightOffersVisitOfferEventBatch',
+];
+
+/**
  * Send a Slack alert, and never let alerting be what kills the daemon.
  *
  * Messages passed here must be stable strings: ErrorNotifier throttles on
@@ -104,6 +118,19 @@ $mongo = new ConsumerDatabase(
     $dbBrightOffers
 );
 
+// Fail at startup rather than on the first batch. A missing batch method — or a
+// constant declared below exit(0), where top-level const statements never run —
+// otherwise surfaces as a crash loop minutes after deploy.
+foreach (BATCHABLE_METHODS as $single => $batch) {
+    foreach ([$single, $batch] as $required) {
+        if (!method_exists($mongo, $required)) {
+            fwrite(STDERR, "[drain] startup check failed: ConsumerDatabase::{$required}() does not exist\n");
+            notify($notifier, 'drain_mongo_queue: startup check failed, batch method missing');
+            exit(1);
+        }
+    }
+}
+
 fwrite(STDOUT, '[drain] started, pid ' . getmypid() . "\n");
 
 $backoff = 0;
@@ -146,9 +173,12 @@ while ($running) {
     } catch (Throwable $e) {
         // Crash-only: let systemd restart us with a clean slate. Alert first —
         // a daemon that dies quietly means the queue silently stops draining.
-        fwrite(STDERR, '[drain] fatal: ' . $e->getMessage() . "\n");
-        error_log('[drain] fatal: ' . $e->getMessage());
-        notify($notifier, 'drain_mongo_queue: daemon exited on a fatal error');
+        fwrite(STDERR, '[drain] fatal: ' . get_class($e) . ': ' . $e->getMessage() . "\n");
+        error_log('[drain] fatal: ' . get_class($e) . ': ' . $e->getMessage());
+        // Include the exception class but not the message: the class is
+        // low-cardinality so the notifier's throttle still works, while giving
+        // the alert enough to act on without opening the journal.
+        notify($notifier, 'drain_mongo_queue: daemon exited on a fatal ' . get_class($e));
         exit(1);
     }
 }
@@ -179,16 +209,6 @@ function isConnectionFailure(Throwable $e): bool
     return str_contains($e->getMessage(), 'ConnectionTimeoutException')
         || str_contains($e->getMessage(), 'ConnectionException');
 }
-
-/**
- * Methods that can be replayed as one batched BulkWrite.
- *
- * Only single-operation writes with no reads qualify. The survey and lead-form
- * methods query first and branch on the result, so they must stay one at a time.
- */
-const BATCHABLE_METHODS = [
-    'createBrightOffersVisitOfferEvent' => 'createBrightOffersVisitOfferEventBatch',
-];
 
 /**
  * Process up to BATCH_SIZE queued writes.
