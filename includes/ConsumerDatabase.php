@@ -166,7 +166,15 @@ class ConsumerDatabase
             );
         }
 
-        $filter = ['parent_brightoffers_ad_id' => $parentBrightOffersAdId];
+        // event_source is required, not optional: EverFlow events share the same
+        // parent_brightoffers_ad_id, and the unique index is partial on
+        // event_source — without it this would match an EverFlow document, and
+        // the query would not be allowed to use the index.
+        $filter = [
+            'parent_brightoffers_ad_id' => $parentBrightOffersAdId,
+            'event_source' => 'BrightOffers',
+            'event_type' => 'brightoffers_visit_offer',
+        ];
 
         // An upsert seeds the new document from the filter's equality fields, so
         // everything dropped from the filter has to be set here instead.
@@ -176,8 +184,6 @@ class ConsumerDatabase
                 'child_brightoffers_ad_id' => $childBrightOffersAdId,
                 'parent_everflow_transaction_id' => $parentEverflowTid,
                 'child_everflow_transaction_id' => $childEverflowTid,
-                'event_source' => 'BrightOffers',
-                'event_type' => 'brightoffers_visit_offer',
                 'timestamp' => $this->nowPst($occurredAtMs),
                 'event_specific_data.campaign_key' => $campaignKey,
                 'event_specific_data.ad_unit_id' => $adUnitId,
@@ -221,7 +227,13 @@ class ConsumerDatabase
                 );
             }
 
-            $filter = ['parent_brightoffers_ad_id' => $parentBrightOffersAdId];
+            // See buildVisitOfferEventOp() — event_source is required both to
+            // avoid matching EverFlow events and to make the partial index usable.
+            $filter = [
+                'parent_brightoffers_ad_id' => $parentBrightOffersAdId,
+                'event_source' => 'BrightOffers',
+                'event_type' => 'brightoffers_visit_survey',
+            ];
 
             $childBrightOffersAdId = null;
             if ($surveyAnswered) {
@@ -288,16 +300,14 @@ class ConsumerDatabase
                 }
             }
 
-            // Event doesn't exist - create new. parent_brightoffers_ad_id comes
-            // from the filter.
+            // Event doesn't exist - create new. The filter supplies
+            // parent_brightoffers_ad_id, event_source and event_type.
             $event = [
                 'consumer_id' => $consumerId,
                 'child_brightoffers_ad_id' => $childBrightOffersAdId,
                 'parent_everflow_transaction_id' => $parentEverflowTid,
                 'child_everflow_transaction_id' => null,
                 'timestamp' => $this->nowPst($occurredAtMs),
-                'event_source' => 'BrightOffers',
-                'event_type' => 'brightoffers_visit_survey',
                 'event_specific_data' => [
                     'campaign_key' => $campaignKey,
                     'survey_id' => $surveyId,
