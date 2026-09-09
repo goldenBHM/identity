@@ -158,20 +158,26 @@ class ConsumerDatabase
         $publisherData,
         $occurredAtMs
     ): array {
-        $filter = [
-            'consumer_id' => $consumerId,
-            'parent_brightoffers_ad_id' => $parentBrightOffersAdId,
-            'child_brightoffers_ad_id' => $childBrightOffersAdId,
-            'parent_everflow_transaction_id' => $parentEverflowTid,
-            'child_everflow_transaction_id' => $childEverflowTid,
-            'event_source' => 'BrightOffers',
-            'event_type' => 'brightoffers_visit_offer'
-        ];
+        // validateRequestData() uses isset(), so "" gets through — and an empty
+        // key would make every such event upsert into one shared document.
+        if ($parentBrightOffersAdId === null || $parentBrightOffersAdId === '') {
+            throw new InvalidArgumentException(
+                'createBrightOffersVisitOfferEvent: parent_brightoffers_ad_id is required'
+            );
+        }
 
-        // Atomic upsert: $setOnInsert only fires on insert, eliminating the
-        // read-then-write race condition when two requests arrive simultaneously.
+        $filter = ['parent_brightoffers_ad_id' => $parentBrightOffersAdId];
+
+        // An upsert seeds the new document from the filter's equality fields, so
+        // everything dropped from the filter has to be set here instead.
         $update = [
             '$setOnInsert' => [
+                'consumer_id' => $consumerId,
+                'child_brightoffers_ad_id' => $childBrightOffersAdId,
+                'parent_everflow_transaction_id' => $parentEverflowTid,
+                'child_everflow_transaction_id' => $childEverflowTid,
+                'event_source' => 'BrightOffers',
+                'event_type' => 'brightoffers_visit_offer',
                 'timestamp' => $this->nowPst($occurredAtMs),
                 'event_specific_data.campaign_key' => $campaignKey,
                 'event_specific_data.ad_unit_id' => $adUnitId,
@@ -207,16 +213,18 @@ class ConsumerDatabase
         $occurredAtMs = null,
     ) {
         try {
+            // validateRequestData() uses isset(), so "" gets through — and an
+            // empty key would collapse every such event into one document.
+            if ($parentBrightOffersAdId === null || $parentBrightOffersAdId === '') {
+                throw new InvalidArgumentException(
+                    'createBrightOffersVisitSurveyEvent: parent_brightoffers_ad_id is required'
+                );
+            }
+
+            $filter = ['parent_brightoffers_ad_id' => $parentBrightOffersAdId];
+
             $childBrightOffersAdId = null;
             if ($surveyAnswered) {
-                // Check if event already exists (by parent_brightoffers_ad_id + consumer_id)
-                $filter = [
-                    'consumer_id' => $consumerId,
-                    'parent_brightoffers_ad_id' => $parentBrightOffersAdId,
-                    'event_source' => 'BrightOffers',
-                    'event_type' => 'brightoffers_visit_survey'
-                ];
-
                 $query = new MongoDB\Driver\Query($filter, ['limit' => 1]);
                 $cursor = self::$mongoClient->executeQuery("{$this->database}.events", $query);
                 $existingEvent = current($cursor->toArray());
@@ -280,10 +288,10 @@ class ConsumerDatabase
                 }
             }
 
-            // Event doesn't exist - create new
+            // Event doesn't exist - create new. parent_brightoffers_ad_id comes
+            // from the filter.
             $event = [
                 'consumer_id' => $consumerId,
-                'parent_brightoffers_ad_id' => $parentBrightOffersAdId,
                 'child_brightoffers_ad_id' => $childBrightOffersAdId,
                 'parent_everflow_transaction_id' => $parentEverflowTid,
                 'child_everflow_transaction_id' => null,
@@ -297,7 +305,13 @@ class ConsumerDatabase
                 ]
             ];
 
-            return $this->insertEvent($event);
+            // Upsert rather than insert: the write queue is at-least-once, so a
+            // replay after a lost response would otherwise duplicate the event.
+            $bulk = new MongoDB\Driver\BulkWrite();
+            $bulk->update($filter, ['$setOnInsert' => $event], ['multi' => false, 'upsert' => true]);
+            $result = self::$mongoClient->executeBulkWrite("{$this->database}.events", $bulk);
+
+            return $result->getUpsertedCount() > 0;
         } catch (Throwable $e) {
             // Rethrow so the drainer keeps the row queued — see the note in
             // createBrightOffersVisitOfferEvent.
