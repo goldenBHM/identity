@@ -205,10 +205,6 @@ try {
 
 if ($collection !== null) {
     try {
-        // updateOne, not findOneAndUpdate: nothing reads the document, and
-        // returning it deserialises the whole consumer record into PHP objects.
-        // matchedCount, not modifiedCount — $setOnInsert modifies nothing when
-        // the document already exists.
         $result = $collection->updateOne(
             ['_id' => $fingerprint_hash],
             ['$setOnInsert' => buildConsumerDocument($payloadFields)],
