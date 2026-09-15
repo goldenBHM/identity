@@ -1,6 +1,10 @@
 <?php
 class ConsumerDatabase
 {
+    // Hinted on every BrightOffers events write. A wrong name here fails every
+    // write with "hint provided does not correspond to an existing index".
+    private const EVENTS_AD_ID_INDEX = 'uniq_parent_brightoffers_ad_id';
+
     // Dedupes construction within a single request only — PHP statics reset
     // between requests. Connections persist across requests via the driver's
     // own per-process client registry, keyed by URI + options.
@@ -76,7 +80,7 @@ class ConsumerDatabase
             );
 
             $bulk = new MongoDB\Driver\BulkWrite();
-            $bulk->update($filter, $update, ['multi' => false, 'upsert' => true]);
+            $bulk->update($filter, $update, ['multi' => false, 'upsert' => true, 'hint' => self::EVENTS_AD_ID_INDEX]);
             $result = self::$mongoClient->executeBulkWrite("{$this->database}.events", $bulk);
 
             return $result->getUpsertedCount() > 0 || $result->getModifiedCount() > 0;
@@ -135,7 +139,7 @@ class ConsumerDatabase
                 $args['occurredAtMs'] ?? null
             );
 
-            $bulk->update($filter, $update, ['multi' => false, 'upsert' => true]);
+            $bulk->update($filter, $update, ['multi' => false, 'upsert' => true, 'hint' => self::EVENTS_AD_ID_INDEX]);
         }
 
         return self::$mongoClient->executeBulkWrite("{$this->database}.events", $bulk);
@@ -167,13 +171,10 @@ class ConsumerDatabase
         }
 
         // event_source is required, not optional: EverFlow events share the same
-        // parent_brightoffers_ad_id, and the unique index is partial on
-        // event_source — without it this would match an EverFlow document, and
-        // the query would not be allowed to use the index.
+        // parent_brightoffers_ad_id, and the unique index is partial on it.
         $filter = [
             'parent_brightoffers_ad_id' => $parentBrightOffersAdId,
             'event_source' => 'BrightOffers',
-            'event_type' => 'brightoffers_visit_offer',
         ];
 
         // An upsert seeds the new document from the filter's equality fields, so
@@ -181,6 +182,7 @@ class ConsumerDatabase
         $update = [
             '$setOnInsert' => [
                 'consumer_id' => $consumerId,
+                'event_type' => 'brightoffers_visit_offer',
                 'child_brightoffers_ad_id' => $childBrightOffersAdId,
                 'parent_everflow_transaction_id' => $parentEverflowTid,
                 'child_everflow_transaction_id' => $childEverflowTid,
@@ -232,12 +234,11 @@ class ConsumerDatabase
             $filter = [
                 'parent_brightoffers_ad_id' => $parentBrightOffersAdId,
                 'event_source' => 'BrightOffers',
-                'event_type' => 'brightoffers_visit_survey',
             ];
 
             $childBrightOffersAdId = null;
             if ($surveyAnswered) {
-                $query = new MongoDB\Driver\Query($filter, ['limit' => 1]);
+                $query = new MongoDB\Driver\Query($filter, ['limit' => 1, 'hint' => self::EVENTS_AD_ID_INDEX]);
                 $cursor = self::$mongoClient->executeQuery("{$this->database}.events", $query);
                 $existingEvent = current($cursor->toArray());
 
@@ -289,7 +290,7 @@ class ConsumerDatabase
                         $bulk->update(
                             $filter,
                             ['$set' => $updateFields],
-                            ['multi' => false, 'upsert' => false]
+                            ['multi' => false, 'upsert' => false, 'hint' => self::EVENTS_AD_ID_INDEX]
                         );
 
                         $result = self::$mongoClient->executeBulkWrite("{$this->database}.events", $bulk);
@@ -301,9 +302,10 @@ class ConsumerDatabase
             }
 
             // Event doesn't exist - create new. The filter supplies
-            // parent_brightoffers_ad_id, event_source and event_type.
+            // parent_brightoffers_ad_id and event_source.
             $event = [
                 'consumer_id' => $consumerId,
+                'event_type' => 'brightoffers_visit_survey',
                 'child_brightoffers_ad_id' => $childBrightOffersAdId,
                 'parent_everflow_transaction_id' => $parentEverflowTid,
                 'child_everflow_transaction_id' => null,
@@ -318,7 +320,7 @@ class ConsumerDatabase
             // Upsert rather than insert: the write queue is at-least-once, so a
             // replay after a lost response would otherwise duplicate the event.
             $bulk = new MongoDB\Driver\BulkWrite();
-            $bulk->update($filter, ['$setOnInsert' => $event], ['multi' => false, 'upsert' => true]);
+            $bulk->update($filter, ['$setOnInsert' => $event], ['multi' => false, 'upsert' => true, 'hint' => self::EVENTS_AD_ID_INDEX]);
             $result = self::$mongoClient->executeBulkWrite("{$this->database}.events", $bulk);
 
             return $result->getUpsertedCount() > 0;

@@ -108,10 +108,12 @@ while ($row = $result->fetch_assoc()) {
     $payloadFields['fingerprint_hash'] = $hash;
 
     try {
-        $collection->findOneAndUpdate(
+        // The returned document was discarded anyway, and deserialising it costs
+        // several times the BSON size in PHP objects.
+        $collection->updateOne(
             ['_id' => $hash],
             ['$setOnInsert' => buildConsumerDocument($payloadFields)],
-            ['upsert' => true, 'returnDocument' => MongoDB\Operation\FindOneAndUpdate::RETURN_DOCUMENT_AFTER]
+            ['upsert' => true]
         );
 
         // Success (or already present) — remove from the queue.

@@ -205,14 +205,13 @@ try {
 
 if ($collection !== null) {
     try {
-        //find or create fingerprint record
-        $document = $collection->findOneAndUpdate(
+        $result = $collection->updateOne(
             ['_id' => $fingerprint_hash],
             ['$setOnInsert' => buildConsumerDocument($payloadFields)],
-            ['upsert' => true, 'returnDocument' => MongoDB\Operation\FindOneAndUpdate::RETURN_DOCUMENT_AFTER]
+            ['upsert' => true]
         );
 
-        if ($document) {
+        if ($result->getUpsertedCount() > 0 || $result->getMatchedCount() > 0) {
             $savedToDb = true;
         } else {
             $mongoDbError = 'Document not saved';
