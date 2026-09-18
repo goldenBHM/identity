@@ -3,7 +3,7 @@ class ConsumerDatabase
 {
     // Hinted on every BrightOffers events write. A wrong name here fails every
     // write with "hint provided does not correspond to an existing index".
-    private const EVENTS_AD_ID_INDEX = 'uniq_parent_brightoffers_ad_id';
+    private const EVENTS_AD_ID_INDEX = 'uniq_parent_ad_id_v2';
 
     // Dedupes construction within a single request only — PHP statics reset
     // between requests. Connections persist across requests via the driver's
